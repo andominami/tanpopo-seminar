@@ -87,6 +87,76 @@ function authorizeDriveAccess() {
 }
 
 /**
+ * これまでに投稿された全ファイル(data/materials.json に載っている全件)に対して、
+ * あらためて「リンクを知っている全員が閲覧可」の共有設定を試みる、手動実行専用の
+ * 復旧用関数。
+ *
+ * 背景: setFilePubliclyViewable() は resolveDriveUploads() 内で try/catch されており、
+ * 失敗してもフォーム投稿自体は失敗させない(実行ログにエラーが残るだけ)仕様にして
+ * いた。実際に確認したところ、共有ドライブ(セミナー写真・セミナー動画)に移動した
+ * ファイルについて、この「anyone」共有の設定が軒並み失敗していた(＝共有ドライブの
+ * メンバー以外は誰も閲覧できない状態だった)。これがスマホ等、共有ドライブの
+ * メンバーではないアカウントで「アクセス権がありません」と出ていた直接の原因。
+ *
+ * 原因として最も可能性が高いのは、共有ドライブ側の設定
+ * 「共有ドライブのメンバーではないユーザーとの共有」が制限されていること。
+ * この関数を実行する前に、Googleドライブで対象の共有ドライブ(セミナー写真・
+ * セミナー動画)を開き、ドライブ名の右にある▽ →「共有ドライブの設定」を開いて、
+ *   - 共有ドライブのメンバーではないユーザーとの共有 → 「許可する」
+ *   - アクセスレベル(共有ドライブ外のユーザーに付与できる権限) →
+ *     「閲覧者、コメント可能、投稿者、コンテンツ管理者、管理者」など、
+ *     「閲覧者」を含むレベルまで許可
+ * になっていることを確認・変更してから実行すること。
+ *
+ * 使い方: スクリプトエディタでこの関数を選択して手動実行するだけ(引数不要)。
+ * 実行後、「表示」→「実行数」または実行ログで結果(成功件数・失敗件数と
+ * 失敗したファイルの詳細)を確認できる。失敗が残る場合は上記の共有ドライブ設定を
+ * 見直すか、Google Workspace管理者に組織全体の外部共有設定の確認を依頼すること。
+ */
+function backfillPublicPermissions() {
+  const props = PropertiesService.getScriptProperties();
+  const owner = props.getProperty("REPO_OWNER");
+  const repo = props.getProperty("REPO_NAME");
+  const token = props.getProperty("GITHUB_TOKEN");
+  if (!owner || !repo || !token) {
+    throw new Error(
+      "スクリプトプロパティに GITHUB_TOKEN / REPO_OWNER / REPO_NAME を設定してください。"
+    );
+  }
+
+  const { materials } = fetchMaterialsJson(owner, repo, token);
+
+  // 資料(materials配列内の各url)と動画(videoUrl)から、重複を除いた全ファイルIDを集める。
+  const fileIds = new Set();
+  materials.forEach((item) => {
+    (item.materials || []).forEach((m) => {
+      const id = extractDriveFileId(m.url || "");
+      if (id) fileIds.add(id);
+    });
+    const videoId = extractDriveFileId(item.videoUrl || "");
+    if (videoId) fileIds.add(videoId);
+  });
+
+  let successCount = 0;
+  const failures = [];
+  fileIds.forEach((fileId) => {
+    try {
+      setFilePubliclyViewable(fileId);
+      successCount++;
+    } catch (err) {
+      failures.push(`${fileId}: ${err}`);
+    }
+  });
+
+  Logger.log(`対象ファイル数: ${fileIds.size}`);
+  Logger.log(`成功: ${successCount}`);
+  Logger.log(`失敗: ${failures.length}`);
+  if (failures.length) {
+    Logger.log("失敗したファイル一覧:\n" + failures.join("\n"));
+  }
+}
+
+/**
  * スプレッドシートの「フォーム送信時」トリガーから呼ばれる関数。
  * トリガーの設定方法は README 参照(onOpen等では自動発火しないため、
  * 手動でインストール型トリガーを登録する必要がある)。
